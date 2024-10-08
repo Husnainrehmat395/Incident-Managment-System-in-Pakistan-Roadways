@@ -1,0 +1,180 @@
+import cv2
+import numpy as np
+import time
+import smtplib
+from email.mime.text import MIMEText
+from ultralytics import YOLO
+import torch
+import os
+
+#%% Email Setup for Alert if Accident detect
+
+sender_email = "aicivil786@gmail.com"  
+receiver_email = "husnainrahmat395@gmail.com"  
+password = os.getenv('EMAIL_PASSWORD') 
+#%% Function to Send an Email Alert
+# This function sends an email alert if a vehicle is detected as stopped
+def send_email_alert(center, object_type):
+    subject = f"Alert: Stopped {object_type} Detected"
+    body = f"A stopped {object_type} was detected at location {center}."
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()  # Enable encryption
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, msg.as_string())
+        server.quit()
+        print("Email alert sent successfully.")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+#%% Load the YOLO Model
+# Load the YOLO model to detect objects in the video
+device = 'cuda' if torch.cuda.is_available() else 'cpu'  
+model = YOLO('yolo11n.pt').to(device)  # Trained model using YOLOv11
+
+#%% Load the Video File
+video_path = r'C:\Traffic_Flow.mp4'  
+cap = cv2.VideoCapture(video_path)  # Loading video for processing
+
+#%% Set Desired Frame Rate
+dfps = 30  # Desired frames per second
+f_time = 1 / dfps  # Time each frame should take to achieve the desired FPS
+
+#%% Dictionaries to Track Vehicle Positions and Stopped Time
+object_positions = {}  # Tracks positions of objects across frames
+object_stop_times = {}  # Tracks when each object stopped
+alert_sent = {}  # Tracks whether an alert has already been sent for an object
+
+#%% Threshold Values for Stopped Object Detection
+frame_threshold = 10  # Number of frames to track object position
+distance_threshold = 10  # Maximum distance (in pixels) to consider as "stopped"
+stop_duration_threshold = 1  # Time in seconds to consider an object "stopped"
+
+#%% Confidence Threshold for Detections
+confidence_threshold = 0.001  # Only consider objects detected with confidence above 50%
+
+#%% Function to Calculate the Center of a Bounding Box
+def get_center(bbox):
+    x1, y1, x2, y2 = bbox
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    return (center_x, center_y)
+
+#%% Video Processing Loop
+frame_count = 0
+while cap.isOpened():
+    start_time = time.time()  # Note the time at the start of each frame for FPS control
+
+    # Read the next frame from the video
+    ret, frame = cap.read()
+    if not ret:
+        break  # Stop the loop if there are no more frames
+
+    # Skip frames to speed up processing (only process every 3rd frame)
+    frame_count += 1
+    if frame_count % 3 != 0:
+        continue
+
+    frame = cv2.resize(frame, (1480, 780))
+
+    # Run YOLO model to detect objects in the current frame
+    results = model(frame, device=device)
+
+    # Loop through all detections in the current frame
+    for result in results:
+        for box in result.boxes:
+            # Extract details about each detected object
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()  # Bounding box coordinates
+            conf = box.conf.cpu().numpy()[0]  # Confidence score for detection
+            cls = int(box.cls.cpu().numpy()[0])  # Class label index
+
+            # Convert to more readable values
+            confidence = float(conf)
+            class_name = model.names[cls]  
+
+            # Only process objects detected with high confidence
+            if confidence > confidence_threshold:
+                # Get the center of the detected object's bounding box
+                center = get_center([x1, y1, x2, y2])
+
+                # Create a unique ID for the detected object
+                object_id = f"{int(x1)}_{int(y1)}_{class_name}"
+
+                # Track the position of the detected object
+                if object_id not in object_positions:
+                    object_positions[object_id] = []
+
+                # Add the current position to the tracking history
+                object_positions[object_id].append(center)
+
+                # Keep only the last 'frame_threshold' positions for this object
+                if len(object_positions[object_id]) > frame_threshold:
+                    object_positions[object_id] = object_positions[object_id][-frame_threshold:]
+
+                # Check if the object has stopped (if we've reached the frame threshold)
+                if len(object_positions[object_id]) == frame_threshold:
+                    # Calculate the distance the object has moved between the first and last recorded positions
+                    start_position = object_positions[object_id][0]
+                    end_position = object_positions[object_id][-1]
+                    distance = np.linalg.norm(np.array(end_position) - np.array(start_position))
+
+                    # If the distance is below the threshold, consider it stopped
+                    if distance < distance_threshold:
+                        if object_id not in object_stop_times:
+                            # Start tracking how long the object has been stopped
+                            object_stop_times[object_id] = time.time()
+                        else:
+                            # Calculate how long the object has been stopped
+                            stop_duration = time.time() - object_stop_times[object_id]
+                            if stop_duration >= stop_duration_threshold:
+                                # If an alert hasn't already been sent, send it now
+                                if object_id not in alert_sent or not alert_sent[object_id]:
+                                    # Mark the object as stopped and print alert
+                                    cv2.putText(frame, 'Stopped', (int(x1), int(y1) - 10), 
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                                    print(f"Alert: Stopped {class_name} detected at {center} for {stop_duration:.2f} seconds")
+
+                                    # Send an email alert
+                                    send_email_alert(center, class_name)
+
+                                    # Mark alert as sent for this object
+                                    alert_sent[object_id] = True
+                    else:
+                        # If the object moved, reset the stop time and alert status
+                        if object_id in object_stop_times:
+                            del object_stop_times[object_id]
+                        if object_id in alert_sent:
+                            alert_sent[object_id] = False
+
+                # Draw a bounding box around detected objects
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+
+                # Display the object's class and confidence on the frame
+                label = f"{class_name} {confidence:.2f}"
+                cv2.putText(frame, label, (int(x1), int(y1) - 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.5, (255, 255, 255), 1)
+
+    # Display the frame with bounding boxes and any stop alerts
+    cv2.imshow('Object Detection', frame)
+
+    # Calculate how much time it took to process the frame
+    elapsed_time = time.time() - start_time
+    remaining_time = f_time - elapsed_time
+
+    # Reduce sleep time to speed up video rate
+    if remaining_time > 0:
+        time.sleep(remaining_time * 0.5)  # Sleep for half the calculated remaining time
+
+    # Press 'q' to exit the video display
+    if cv2.waitKey(int(f_time * 1000)) & 0xFF == ord('q'):  # Adjust waitKey based on desired frame time
+        break
+
+
+# Release video resources and close windows when done
+cap.release()
+cv2.destroyAllWindows()
