@@ -35,7 +35,7 @@ def send_email_alert(center, object_type):
 #%% Load the YOLO Model
 # Load the YOLO model to detect objects in the video
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  
-model = YOLO('yolo11n.pt').to(device)  # Trained model using YOLOv11
+model = YOLO('yolov8.pt').to(device)  # Trained model using YOLOv11
 
 #%% Load the Video File
 video_path = r'C:\Traffic_Flow.mp4'  
@@ -56,7 +56,7 @@ distance_threshold = 10  # Maximum distance (in pixels) to consider as "stopped"
 stop_duration_threshold = 1  # Time in seconds to consider an object "stopped"
 
 #%% Confidence Threshold for Detections
-confidence_threshold = 0.001  # Only consider objects detected with confidence above 50%
+confidence_threshold = 0.1  # Only consider objects detected with confidence above 50%
 
 #%% Function to Calculate the Center of a Bounding Box
 def get_center(bbox):
@@ -148,7 +148,7 @@ while cap.isOpened():
                         # If the object moved, reset the stop time and alert status
                         if object_id in object_stop_times:
                             del object_stop_times[object_id]
-                        if object_id in alert_sent:
+                        if object_id in alert_sent:            
                             alert_sent[object_id] = False
 
                 # Draw a bounding box around detected objects
