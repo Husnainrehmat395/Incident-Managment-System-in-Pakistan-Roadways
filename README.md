@@ -8,3 +8,5 @@
 
 ## Overview
 This project detects real-time traffic incidents and sends alerts to improve emergency response times.
+![CSS](https://img.shields.io/badge/CSS-Updated-Apr%209-purple) ![Python](https://img.shields.io/badge/Python-3.9-blue)
+
